@@ -102,6 +102,17 @@
     (org-ai-complete-block)
     t))
 
+(cl-defun strip-delimited-comments (text &optional (begin-comment "<!--") (end-comment "-->"))
+  "Strip comments from TEXT."
+  (with-temp-buffer
+    (insert text)
+    (goto-char (point-min))
+    (while (search-forward begin-comment nil t)
+      (let ((start (- (point) (length begin-comment))))
+        (when (search-forward end-comment nil t)
+          (delete-region start (point)))))
+    (buffer-string)))
+
 (defun org-ai-complete-block ()
   "Main command which is normally bound to \\[org-ai-complete-block].
 When you are inside an #+begin_ai...#+end_ai block, it will send
@@ -110,7 +121,7 @@ result."
   (interactive)
   (let* ((context (org-ai-special-block))
          (info (org-ai-get-block-info context))
-         (content (org-ai-get-block-content context))
+         (content (strip-delimited-comments (org-ai-get-block-content context)))
          (req-type (org-ai--request-type info))
          (sys-prompt-for-all-messages (or (not (eql 'x (alist-get :sys-everywhere info 'x)))
                                           (org-entry-get-with-inheritance "SYS-EVERYWHERE")
