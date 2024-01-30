@@ -67,13 +67,36 @@ You can continue to type and press `C-c C-c` to create a conversation. `C-g` wil
 
 ### DALL-E in org-mode
 
+Use the `:image` keyword to generate an image. This uses DALL·E-3 by default.
+
 ```org
-#+begin_ai :image :size 256x256
+#+begin_ai :image :size 1024x1024
 Hyper realistic sci-fi rendering of super complicated technical machine.
 #+end_ai
 ```
 
 ![dall-e in org-mode](doc/org-ai-demo-2.gif)
+
+You can use the following keywords to control the image generation:
+- `:size <width>x<height>` - the size of the image to generate (default: 1024x1024)
+- `:model <model>` - the model to use (default: `"dall-e-3"`)
+- `:quality <quality>` - the quality of the image (choices: `hd`, `standard`)
+- `:style <style>` - the style to use (choices: `vivid`, `natural`)
+- `:n <count> - the number of images to generate (default: 1)
+
+(For more information about those settings see [this OpenAI blog post](https://cookbook.openai.com/articles/what_is_new_with_dalle_3).
+
+You can customize the defaults for those variables with `customize-variable` or by setting them in your config:
+
+```elisp
+(setq org-ai-image-model "dall-e-3")
+(setq org-ai-image-default-size "1792x1024")
+(setq org-ai-image-default-count 2)
+(setq org-ai-image-default-style 'vivid)
+(setq org-ai-image-default-quality 'hd)
+(setq org-ai-image-directory (expand-file-name "org-ai-images/" org-directory))
+```
+
 
 ### Image variations
 
@@ -299,13 +322,16 @@ You can also use an existing image as input to generate more similar looking ima
 
 #### org-ai-on-project
 
-This is an experimental feature. Running this command will open a separate buffer that allows you to select choose multiple files (and optionally select a sub-region inside a file) and then run a prompt on it.
+Using the org-ai-on-project buffer allows you to run commands on files in a project, alternatively also just on selected text in those files. You can e.g. select the readme of a project and ask "what is it all about?" or have code explained to you. You can also ask for code changes, which will generate a diff. If you know somehone who thinks only VS Code with Copilot enabled can do that, point them here.
+
+Running the `org-ai-on-project` command will open a separate buffer that allows you to select choose multiple files (and optionally select a sub-region inside a file) and then run a prompt on it.
 
 ![org-ai-on-project](doc/org-ai-on-project-buffer.png)
 
 If you deactivate "modify code", the effect is similar to running `org-ai-on-region` just that the file contents all appear in the prompt.
 
-With "modify code" activated, you can ask the AI to modify or refactor the code. By default ("Request diffs") deactivated, we will prompt to generate the new code for all selected files/regions and you can then see a diff per file and decide to apply it or not. With "Request diffs" active, the AI will be asked to directly create a unified diff that can then be applied. This is experimental and might not work. GPT can't count...
+With "modify code" activated, you can ask the AI to modify or refactor the code. By default ("Request diffs") deactivated, we will prompt to generate the new code for all selected files/regions and you can then see a diff per file and decide to apply it or not. With "Request diffs" active, the AI will be asked to directly create a unified diff that can then be applied.
+
 
 ### Noweb Support
 
