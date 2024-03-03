@@ -240,27 +240,41 @@ penalty. `CONTEXT' is the context of the special block."
                                                              prop
                                                            (if (stringp prop) (string-to-number prop) prop)))
                                                        ,@default-form)))
+                       ,@body))
+                  (let-with-header-or-inherited-property
+                    (definitions &rest body)
+                    `(let ,(cl-loop for (sym . default-form) in definitions
+                                    collect `(,sym (or
+                                                    (alist-get ,(intern (format ":%s" (symbol-name sym))) info)
+                                                    (org-entry-get-with-inheritance ,(symbol-name sym))
+                                                    ,sym)))
                        ,@body)))
-      (let-with-captured-arg-or-header-or-inherited-property
-       ((model (if messages org-ai-default-chat-model org-ai-default-completion-model))
-        (max-tokens org-ai-default-max-tokens)
-        (top-p)
-        (temperature)
-        (frequency-penalty)
-        (presence-penalty))
-       (setq org-ai--current-insert-position-marker nil)
-       (setq org-ai--chat-got-first-response nil)
-       (setq org-ai--debug-data nil)
-       (setq org-ai--debug-data-raw nil)
-       (org-ai-stream-request :prompt prompt
-                              :messages messages
-                              :model model
-                              :max-tokens max-tokens
-                              :temperature temperature
-                              :top-p top-p
-                              :frequency-penalty frequency-penalty
-                              :presence-penalty presence-penalty
-                              :callback callback)))))
+      (let-with-header-or-inherited-property
+       ((org-ai-azure-openai-api-base)
+        (org-ai-azure-openai-deployment)
+        (org-ai-azure-openai-api-version)
+        (org-ai-openai-api-token))
+       (let-with-captured-arg-or-header-or-inherited-property
+        ((model (if messages org-ai-default-chat-model org-ai-default-completion-model))
+         (max-tokens org-ai-default-max-tokens)
+         (top-p)
+         (temperature)
+         (frequency-penalty)
+         (presence-penalty))
+        (setq org-ai--current-insert-position-marker nil)
+        (setq org-ai--chat-got-first-response nil)
+        (setq org-ai--debug-data nil)
+        (setq org-ai--debug-data-raw nil)
+        (org-ai-stream-request
+         :prompt prompt
+         :messages messages
+         :model model
+         :max-tokens max-tokens
+         :temperature temperature
+         :top-p top-p
+         :frequency-penalty frequency-penalty
+         :presence-penalty presence-penalty
+         :callback callback))))))
 
 (defun org-ai--insert-stream-completion-response (context buffer &optional response)
   "Insert the response from the OpenAI API into the buffer.
