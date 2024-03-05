@@ -150,6 +150,121 @@ The numeric `ARG' can be used for killing the last n."
                 (cl-destructuring-bind (start . end) region
                   (kill-region end start)))))
 
+(defun is-jpeg-file (filename)
+  "Return t if FILENAME is a JPEG file."
+  (let ((case-fold-search t))
+    (string-match "\\.jpe?g\\'" filename)))
+
+;; OpenAI: For low res mode, we expect a 512px x 512px image.
+;; For high res mode, the short side of the image should be less than 768px and the long side should be less than 2,000px
+(defun resize-image-for-openai-vision (image-path)
+  "Convert/Resize the image to jpg, if it isn't jpg or doesn't meet size constraints, saving the resized image as a new temp jpg file.
+Resize such that the short side is no more than 768px, while the long side is no more than 2000px, maintaining aspect ratio."
+  (interactive "fImage Path: ")
+  (-let* ((image-path (expand-file-name image-path))
+          ((width . height) (image-size (create-image image-path) t))
+          (short-side (min width height))
+          (long-side (max width height))
+          (landscape-mode (= long-side width))
+          (resize-needed (or (> short-side 768) (> long-side 2000) (not (is-jpeg-file image-path)))))
+    (when resize-needed
+      (let* ((new-short-side (if (> short-side 768) 768 short-side))
+             (new-long-side (if (> long-side 2000) 2000 long-side))
+             (supported-aspect-ratio (/ 2000.0 768.0))
+             (aspect-ratio (/ (float long-side) short-side))
+             (temp-file-path (concat (file-name-sans-extension image-path) "_resized.jpg")))
+        (unless (and (<= short-side 768) (<= long-side 2000))
+          (if (> aspect-ratio supported-aspect-ratio)
+              (setq new-short-side (max 1 (floor (/ new-long-side aspect-ratio))))
+            (setq new-long-side (max 1 (floor (* new-short-side aspect-ratio))))))
+        ;; Use ImageMagick's convert tool to resize and save to temp-file-path
+        (shell-command (format "convert %s -resize %dx%d! %s"
+                               (shell-quote-argument image-path)
+                               (if landscape-mode new-long-side new-short-side)
+                               (if landscape-mode new-short-side new-long-side)
+                               (shell-quote-argument temp-file-path)))
+        (message "Image resized to: %dx%d, saved as %s" new-long-side new-short-side temp-file-path)
+        temp-file-path))))
+
+(defun extract-org-image-link-file-path (filelink)
+  "Extract and return the path after 'file:'
+If the file is not an image or doesn't exist, return nil."
+  (when (string-prefix-p "file:" filelink)
+    (let ((file-extension-re (image-file-name-regexp))
+          (path (expand-file-name (substring filelink (length "file:")))))
+      (when (and path (string-match-p file-extension-re path) (file-exists-p path))
+        path))))
+
+(defun base64-jpg-data-block (filepath)
+  "Encode file as base64 data"
+  (concat "data:image/jpeg;base64,"
+          (with-temp-buffer
+            (insert-file-contents-literally filepath)
+            (base64-encode-region (point-min) (point-max) t)
+            (buffer-string))))
+
+(defun org-link-to-openai-message-block (link-matched full-matched)
+  (if (string-prefix-p "http" link-matched)
+      `((type . "image_url")
+        (image_url . ((url . ,link-matched))))
+    (if-let* ((local-imgfile (extract-org-image-link-file-path link-matched)))
+        (let* ((converted-temp-imgfile (resize-image-for-openai-vision local-imgfile))
+               (base64-data (base64-jpg-data-block (or converted-temp-imgfile local-imgfile))))
+          (when converted-temp-imgfile (delete-file converted-temp-imgfile))
+          `((type . "image_url")
+            (image_url . ((url . ,base64-data)))))
+      `((type . "text")
+        (text . ,full-matched)))))
+
+(defun parse-user-content-as-openai-vision (&optional content)
+  "Parse the content into a vector of text and image links.
+If no image found, return NIL"
+  ;; https://platform.openai.com/docs/guides/vision?lang=curl
+  (interactive)
+  (unless content (setq content (buffer-string)))
+  ;; matching org links [[file:...][description]]
+  (let ((regex "\\[\\[\\(\\(?:file:\\|https?://\\)[^]]*?\\)\\]\\(?:\\[[^]]*?\\]\\)?\\]")
+        (pos 0)  ; Tracking position within the string.
+        segments  ; List to hold the parsed segments.
+        start
+        match-end
+        valid-image-url-found)
+    ;; Loop over the content string, searching for matches to the regex.
+    (while (string-match regex content pos)
+      (setq start (match-beginning 0)
+            match-end (match-end 0))
+      ;; If there's text before the current match, add it as a text segment.
+      (when (> start pos)
+        (push `((type . "text")
+                (text . ,(substring content pos start)))
+              segments))
+      (let ((msgblk (org-link-to-openai-message-block
+                     (match-string-no-properties 1 content)
+                     (match-string-no-properties 0 content))))
+        ;; Add the current match as a link segment.
+        (push msgblk segments)
+        (-let ((((typekey . typeval) . ignore) msgblk))
+          (when (string= typeval "image_url")
+            (setq valid-image-url-found t))))
+      ;; Update pos to the end of the current match, to search for the next one.
+      (setq pos match-end))
+
+    ;; If there's text after the last match, add it as a text segment.
+    (when (< pos (length content))
+      (push `((type . "text") (text . ,(substring content pos))) segments))
+
+    (setq segments (nreverse segments))
+
+    ;; For debugging or interactive use: print the structured list.
+    (when (called-interactively-p 'any)
+      (with-output-to-temp-buffer "*temp-buffer*"
+        (princ (if valid-image-url-found segments content))))
+
+    ;; Return the structured list of segments if there are image embedded
+    ;; othewise if it's just text keep it as is
+    (when valid-image-url-found
+      (apply #'vector segments))))
+
 (defun org-ai--collect-chat-messages (content-string &optional default-system-prompt persistant-sys-prompts)
   "Takes `CONTENT-STRING' and splits it by [SYS]:, [ME]: and [AI]: markers.
 If `PERSISTANT-SYS-PROMPTS' is non-nil, [SYS] prompts are
@@ -209,6 +324,19 @@ intercalated. The [SYS] prompt used is either
                               else
                               do (push (list :role role :content content) result)
                               do (setq last-role role)
+                              finally return (reverse result)))
+
+           ;; TODO: model should be available at this point,
+           ;; and we determine whether search for image based on model == "gpt-4-vision-preview"
+           ;; however currently the code first extracted messages before determining what model to use
+
+           ;; check if there's any org image links [[file:/path/to/some.jpg][description]]
+           (messages (cl-loop with result = nil
+                              for (_ role _ content) in messages
+                              if (eql role 'user)
+                              do (push (list :role role :content (or (parse-user-content-as-openai-vision content) content)) result)
+                              else
+                              do (push (list :role role :content content) result)
                               finally return (reverse result)))
 
            (starts-with-sys-prompt-p (and messages (eql (plist-get (car messages) :role) 'system)))
