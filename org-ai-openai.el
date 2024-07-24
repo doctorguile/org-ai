@@ -308,7 +308,6 @@ When `RESPONSE' is nil, it means we are done. `CONTEXT' is the
 context of the special block. `BUFFER' is the buffer to insert
 the response into."
   (if response
-
       ;; process response
       (if-let ((error (plist-get response 'error)))
           (if-let ((message (plist-get error 'message))) (error message) (error error))
@@ -325,33 +324,49 @@ the response into."
                 (backward-char))
 
               ;; insert text
-              (if-let* ((choices (or (alist-get 'choices response)
-                                     (plist-get response 'choices)))
-                        (choice (and (arrayp choices) (> (length choices) 0) (aref choices 0)))
-                        (delta (plist-get choice 'delta)))
-                  (cond
-                   ((plist-get delta 'role)
-                    (let ((role (plist-get delta 'role)))
-                      (progn
-                        (setq org-ai--current-chat-role role)
-                        (cond
-                         ((string= role "assistant")
-                          (insert "\n[AI]: "))
-                         ((string= role "user")
-                          (insert "\n[ME]: "))
-                         ((string= role "system")
-                          (insert "\n[SYS]: ")))
-                        (run-hook-with-args 'org-ai-after-chat-insertion-hook 'role role))))
-                   ((plist-get delta 'content)
-                    (let ((text (plist-get delta 'content)))
-                      (when (or org-ai--chat-got-first-response (not (string= (string-trim text) "")))
-                        (when (and (not org-ai--chat-got-first-response) (string-prefix-p "```" text))
-                          ;; start markdown codeblock responses on their own line
-                          (insert "\n"))
-                        (insert (decode-coding-string text 'utf-8))
-                        (run-hook-with-args 'org-ai-after-chat-insertion-hook 'text text))
-                      (setq org-ai--chat-got-first-response t)))))
-
+              (when-let* ((choices (or (alist-get 'choices response)
+                                       (plist-get response 'choices)))
+                          (choice (and (arrayp choices) (> (length choices) 0) (aref choices 0)))
+                          (delta (plist-get choice 'delta)))
+                ;; (message "%s" delta)
+                (let ((role (plist-get delta 'role))
+                      (text (plist-get delta 'content) )
+                      (tools (plist-get delta 'tool_calls)))
+                  ;; (cond (role
+                  (when (and role (not org-ai--chat-got-first-response))
+                    (setq org-ai--current-chat-role role)
+                    (cond
+                     ((string= role "assistant")
+                      (insert "\n[AI]: "))
+                     ((string= role "user")
+                      (insert "\n[ME]: "))
+                     ((string= role "system")
+                      (insert "\n[SYS]: ")))
+                    (setq org-ai--chat-got-first-response t)
+                    (run-hook-with-args 'org-ai-after-chat-insertion-hook 'role role))
+                  (when text 
+                    (when (or org-ai--chat-got-first-response (not (string= (string-trim text) "")))
+                      (when (and (not org-ai--chat-got-first-response) (string-prefix-p "```" text))
+                        ;; start markdown codeblock responses on their own line
+                        (insert "\n"))
+                      (insert (decode-coding-string text 'utf-8))
+                      (run-hook-with-args 'org-ai-after-chat-insertion-hook 'text text))
+                    (setq org-ai--chat-got-first-response t))
+                  (when tools
+                    (setq org-ai--chat-got-first-response t)
+                    (when-let* ((tool (and (arrayp tools) (> (length tools) 0) (aref tools 0)))
+                                (func (plist-get tool 'function)))
+                      (when-let* ((fname (plist-get func 'name)))
+                        (insert "\nfunction_call : ")
+                        (insert (decode-coding-string fname 'utf-8))
+                        (insert "\narguments :\n")
+                        (run-hook-with-args 'org-ai-after-chat-insertion-hook 'text fname)
+                        (setq org-ai--chat-got-first-response t))
+                      (when-let* ((fargs (plist-get func 'arguments)))
+                        (insert (decode-coding-string fargs 'utf-8))
+                        (run-hook-with-args 'org-ai-after-chat-insertion-hook 'text fargs)
+                        (setq org-ai--chat-got-first-response t)))
+                    )))
               (setq org-ai--current-insert-position-marker (point-marker))))))
 
     ;; insert new prompt and change position
@@ -444,8 +459,11 @@ penalty. `PRESENCE-PENALTY' is the presence penalty."
                                         (choice (aref choices 0))
                                         (message (alist-get 'message choice))
                                         (role (alist-get 'role message))
-                                        (content (alist-get 'content message)))
-                                  (funcall callback content role usage)
+                                        ;; (content (alist-get 'content message))
+                                        )
+                                  (if (alist-get 'finish_reason choice)
+                                      (funcall callback nil nil nil)
+                                    (funcall callback (or (alist-get 'content message) " ") role usage))
                                 (funcall callback nil nil nil)))
                      (error (org-ai--show-error err)))))))))
 
@@ -498,6 +516,16 @@ penalty. `PRESENCE-PENALTY' is the presence penalty."
           t))
     (error nil)))
 
+(setq openaitools ",\"tools\":[{\"type\": \"function\", \"function\": {\"name\": \"calculator\", \"description\": \"A simple calculator used to perform basic arithmetic operations\", \"parameters\": {\"type\": \"object\", \"properties\": {\"num1\": {\"type\": \"number\"}, \"num2\": {\"type\": \"number\"}, \"operator\": {\"type\": \"string\", \"enum\": [\"+\", \"-\", \"*\", \"/\", \"**\", \"sqrt\"]}}, \"required\": [\"num1\", \"num2\", \"operator\"]}}}]")
+
+;; (setq openaitools ",\"tools\":[{\"type\": \"function\", \"function\": {\"name\": \"get_stock_market_data\", \"description\": \"Get the stock market data for a given index\", \"parameters\": {\"type\": \"object\", \"properties\": {\"index\": {\"type\": \"string\", \"enum\": [\"S&P 500\", \"NASDAQ Composite\", \"Dow Jones Industrial Average\", \"Financial Times Stock Exchange 100 Index\"]}}, \"required\": [\"index\"]}}}, {\"type\": \"function\", \"function\": {\"name\": \"calculator\", \"description\": \"A simple calculator used to perform basic arithmetic operations\", \"parameters\": {\"type\": \"object\", \"properties\": {\"num1\": {\"type\": \"number\"}, \"num2\": {\"type\": \"number\"}, \"operator\": {\"type\": \"string\", \"enum\": [\"+\", \"-\", \"*\", \"/\", \"**\", \"sqrt\"]}}, \"required\": [\"num1\", \"num2\", \"operator\"]}}}]")
+
+(defun append-openai-tools (str1)
+  (let* ((l (length str1))
+         (first-part (substring str1 0 (1- l)))
+         (last-char (substring str1 (1- l))))
+    (concat first-part openaitools last-char)))
+
 (cl-defun org-ai--payload (&optional &key prompt messages model max-tokens temperature top-p frequency-penalty presence-penalty stream)
   "Create the payload for the OpenAI API.
 `PROMPT' is the query for completions `MESSAGES' is the query for
@@ -518,7 +546,7 @@ is the presence penalty.
                              ,@(when top-p             `((top_p . ,top-p)))
                              ,@(when frequency-penalty `((frequency_penalty . ,frequency-penalty)))
                              ,@(when presence-penalty  `((presence_penalty . ,presence-penalty)))))))
-    (encode-coding-string (json-encode data) 'utf-8)))
+    (encode-coding-string (append-openai-tools (json-encode data)) 'utf-8)))
 
 (defun org-ai--url-request-on-change-function (_beg _end _len)
   "Look into the url-request buffer and manually extracts JSON stream responses.
